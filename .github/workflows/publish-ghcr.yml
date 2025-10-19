@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: "Image name (lowercase, no spaces)"
+        description: "Image name (lowercase)"
         type: string
         required: true
         default: devbot
       tag:
-        description: "Tag to publish (e.g., latest or v1.2.3)"
+        description: "Tag to publish (e.g., latest or v0.0.1)"
         type: string
         required: true
         default: latest
@@ -29,22 +29,48 @@ permissions:
 
 jobs:
   build-push:
-    name: Build & Push
     runs-on: ubuntu-latest
     env:
       REGISTRY: ghcr.io
-      OWNER: ${{ github.repository_owner }}
-      IMAGE: ${{ github.repository_owner }}/${
-        { github.event_name == 'workflow_dispatch' && inputs.image_name || 'devbot' }}
-      TAG_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (multi-arch)
+      - name: Lowercase owner
+        id: who
+        run: |
+          echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Resolve image and tags
+        id: tags
+        run: |
+          IMAGE_NAME="${{ inputs.image_name || 'devbot' }}"
+          OWNER="${{ steps.who.outputs.owner_lc }}"
+          IMAGE_REF="${{ env.REGISTRY }}/${OWNER}/${IMAGE_NAME}"
+
+          TAGS=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+            TAGS+=("${IMAGE_REF}:${TAG}")
+            if [ "${{ inputs.also_tag_latest }}" = "true" ] && [ "${TAG}" != "latest" ]; then
+              TAGS+=("${IMAGE_REF}:latest")
+            fi
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            TAGS+=("${IMAGE_REF}:latest")
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            TAGS+=("${IMAGE_REF}:${{ github.ref_name }}")
+            TAGS+=("${IMAGE_REF}:latest")
+          fi
+
+          printf '%s\n' "${TAGS[@]}" | paste -sd, - > /tmp/tags.csv
+          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
+          echo "list=$(cat /tmp/tags.csv)" >> $GITHUB_OUTPUT
+          echo "Resolved tags: $(cat /tmp/tags.csv)"
+
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -53,30 +79,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute tags
-        id: tags
-        run: |
-          IMAGE_REF="${REGISTRY}/${IMAGE}"
-          TAGS=()
-          if [ -n "${TAG_INPUT}" ]; then
-            TAGS+=("${IMAGE_REF}:${TAG_INPUT}")
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.also_tag_latest }}" = "true" ] && [ "${TAG_INPUT}" != "latest" ]; then
-              TAGS+=("${IMAGE_REF}:latest")
-            fi
-          else
-            if [ "${{ github.event_name }}" = "push" ]; then
-              TAGS+=("${IMAGE_REF}:latest")
-            elif [ "${{ github.event_name }}" = "release" ]; then
-              TAGS+=("${IMAGE_REF}:${{ github.ref_name }}")
-              TAGS+=("${IMAGE_REF}:latest")
-            fi
-          fi
-          printf '%s\n' "${TAGS[@]}" | paste -sd, - > tags.csv
-          echo "list=$(cat tags.csv)" >> $GITHUB_OUTPUT
-          echo "primary=$(head -n1 tags.csv | cut -d, -f1)" >> $GITHUB_OUTPUT
-          echo "tags:"
-          cat tags.csv
 
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
