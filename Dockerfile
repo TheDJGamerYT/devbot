@@ -1,16 +1,27 @@
 FROM node:20-bookworm
 
-# Install Python and tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip git curl ca-certificates dumb-init bash \ && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install VS Code Server
+# Use APT cache mounts + retries for CI stability
+RUN --mount=type=cache,target=/var/lib/apt/lists \
+    --mount=type=cache,target=/var/cache/apt \
+    bash -lc '\
+      set -euo pipefail; \
+      apt-get -o Acquire::Retries=3 update; \
+      apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        ca-certificates curl git bash dumb-init python3 python3-pip \
+        gnupg procps; \
+      rm -rf /var/lib/apt/lists/* \
+    '
+
+# Install code-server (uses curl + apt inside script; gnupg helps if keys needed)
 RUN curl -fsSL https://code-server.dev/install.sh | sh
 
-# Create dirs
-RUN mkdir -p /opt/manager /opt/examples /workspace \ && chown -R node:node /workspace /opt /home/node
+# Prepare runtime dirs
+RUN mkdir -p /opt/manager /opt/examples /workspace \
+ && chown -R node:node /workspace /opt /home/node
 
-# Copy manager + entrypoint + examples
+# Copy app bits
 COPY manager/manager.js /opt/manager/manager.js
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
